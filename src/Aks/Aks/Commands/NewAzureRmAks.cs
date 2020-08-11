@@ -13,6 +13,8 @@
 // ----------------------------------------------------------------------------------
 
 using System;
+using System.Diagnostics;
+using System.IO;
 using System.Management.Automation;
 using Microsoft.Azure.Commands.Aks.Models;
 using Microsoft.Azure.Commands.Aks.Properties;
@@ -31,10 +33,16 @@ namespace Microsoft.Azure.Commands.Aks
         [Parameter(Mandatory = false, HelpMessage = "Create cluster even if it already exists")]
         public SwitchParameter Force { get; set; }
 
+        [Parameter(
+            Mandatory = false,
+            HelpMessage = "Generate ssh key file to {HOME}/.ssh/id_rsa.")]
+        public SwitchParameter GenerateSshKey { get; set; }
+
         public override void ExecuteCmdlet()
         {
             base.ExecuteCmdlet();
             PreValidate();
+            PrepareParameter();
 
             Action action = () =>
             {
@@ -72,6 +80,76 @@ namespace Microsoft.Azure.Commands.Aks
             if ((this.IsParameterBound(c => c.NodeMinCount) || this.IsParameterBound(c => c.NodeMaxCount) || this.EnableNodeAutoScaling.IsPresent) &&
                 !(this.IsParameterBound(c => c.NodeMinCount) && this.IsParameterBound(c => c.NodeMaxCount) && this.EnableNodeAutoScaling.IsPresent))
                 throw new PSInvalidCastException(Resources.AksNodePoolAutoScalingParametersMustAppearTogether);
+
+            if (this.IsParameterBound(c => c.GenerateSshKey) && this.IsParameterBound(c => c.SshKeyValue))
+            {
+                throw new ArgumentException(string.Format(Resources.DonotUseGenerateSshKeyWithSshKeyValue));
+            }
+        }
+
+        private void VerifySshKeyGenBinaryExist()
+        {
+            using (Process process = new Process())
+            {
+                if (Environment.OSVersion.Platform.ToString().Contains("Win"))
+                {
+                    process.StartInfo.FileName = "where.exe";
+                }
+                else
+                {
+                    process.StartInfo.FileName = "whereis";
+                }
+                process.StartInfo.Arguments = "ssh-keygen";
+                process.StartInfo.UseShellExecute = false;
+                process.StartInfo.RedirectStandardOutput = true;
+
+                process.Start();
+                process.WaitForExit();
+
+                string result = process.StandardOutput.ReadLine();
+                if (result.Contains("not found") || result.Contains("Could not find") || result.Trim().Equals("ssh-keygen:"))
+                {
+                    throw new ArgumentException(string.Format(Resources.EnableSsh));
+                }
+
+                if (process.ExitCode != 0)
+                {
+                    throw new ArgumentException(string.Format(Resources.EnableSsh));
+                }
+            }
+        }
+
+        private string GenerateSshKeyValue()
+        {
+            VerifySshKeyGenBinaryExist();
+            String generateSshKeyPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh", "id_rsa"); ;
+            if (File.Exists(generateSshKeyPath))
+            {
+                throw new ArgumentException(string.Format(Resources.DefaultSshKeyAlreadyExist));
+            }
+            using (Process process = new Process())
+            {
+                process.StartInfo.FileName = "ssh-keygen";
+                process.StartInfo.Arguments = "-f " + generateSshKeyPath;
+                process.StartInfo.UseShellExecute = false;
+                process.StartInfo.RedirectStandardInput = true;
+                process.StartInfo.RedirectStandardError = true;
+                process.StartInfo.RedirectStandardOutput = true;
+                process.Start();
+
+                Console.WriteLine(process.StandardOutput.ReadToEnd());
+
+                process.WaitForExit();
+            }
+            return GetSshKey(generateSshKeyPath);
+        }
+
+        protected void PrepareParameter()
+        {
+            if (this.IsParameterBound(c => c.GenerateSshKey))
+            {
+                SshKeyValue = GenerateSshKeyValue();
+            }
         }
     }
 }
